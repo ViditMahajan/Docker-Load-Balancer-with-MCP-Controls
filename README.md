@@ -49,75 +49,41 @@ DockRoute implements these enterprise traffic-shaping patterns from first princi
 
 ```mermaid
 flowchart TD
-    %% COLOR & STYLE DEFINITIONS
-    classDef clientStyle fill:#1e3799,stroke:#4a69bd,stroke-width:2px,color:#ffffff;
-    classDef mcpStyle fill:#4a148c,stroke:#8e24aa,stroke-width:2px,color:#ffffff;
-    classDef ctrlStyle fill:#0c2461,stroke:#1e90ff,stroke-width:2px,color:#ffffff;
-    classDef lockStyle fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#ffffff;
-    classDef appAStyle fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
-    classDef appBStyle fill:#104e32,stroke:#10ac84,stroke-width:2px,color:#ffffff;
-    classDef daemonStyle fill:#2c3e50,stroke:#7f8c8d,stroke-width:2px,color:#ffffff;
-    classDef logStyle fill:#3d3d3d,stroke:#a4b0be,stroke-width:2px,color:#ffffff;
-
-    subgraph Clients[" 🌐 Clients & Operators "]
-        TG["🚀 CLI Traffic Generator<br/><code>execution/traffic_generator.py</code>"]:::clientStyle
-        UI["🖥️ Web Dashboard<br/><code>static/index.html</code>"]:::clientStyle
-        MCPAgent["🤖 MCP Host / AI Agent<br/>(Claude / Cursor)"]:::mcpStyle
+    subgraph Clients["Clients"]
+        HTTP["HTTP Traffic (/proxy, /proxy/delay)"]
+        UI["Web Dashboard (:8000)"]
+        MCP["MCP Client (stdio / JSON-RPC)"]
     end
 
-    subgraph MCPBridge[" ⚡ MCP stdio Bridge "]
-        MCPServer["🔌 FastMCP Stdio Server<br/><code>mcp_server.py</code>"]:::mcpStyle
+    subgraph Controller["Load Balancer & Controller (:8000)"]
+        API["FastAPI Control Plane (/api/split, /api/rollout)"]
+        MCP_SERVER["FastMCP Server (mcp_server.py)"]
+        SM["StateManager (State, In-Flight & Split)"]
+        LB["LoadBalancer (Reverse Proxy & SWRR Engine)"]
+        HC["HealthChecker (Polling /health every 2s)"]
+        RM["RolloutManager (Safe Rollout & Draining)"]
+        EL["EventLogger (Audit Ring Buffer maxlen=500)"]
+        DS["DockerService (Docker Engine Socket)"]
     end
 
-    subgraph ControllerCore[" ⚖️ DockRoute Controller Service (:8000) "]
-        API["📡 FastAPI Control Plane<br/><code>/api/split, /api/rollout</code>"]:::ctrlStyle
-        Proxy["🔀 Reverse Proxy Core<br/><code>/proxy, /proxy/delay</code>"]:::ctrlStyle
-        SWRR["⚙️ Smooth Weighted Round-Robin Engine<br/><code>_select_container_unlocked()</code>"]:::ctrlStyle
-        HM["💓 Background Health Loop<br/>(Polls backends every 2.0s)"]:::ctrlStyle
-        EL["📜 Event Audit Ring Buffer<br/>(In-memory deque, maxlen=500)"]:::logStyle
-        State["💾 Controller State Store<br/>(Weights, Counters, Metrics)"]:::ctrlStyle
-        LockOp["🔒 Operation Lock<br/>(Serialized actions, rejects 409)"]:::lockStyle
-        LockState["⚡ State Lock<br/>(Microsecond atomic read/write)"]:::lockStyle
+    subgraph Containers["Backends (docker-lb-net)"]
+        A["Container A: app-a (:8000)"]
+        B["Container B: app-b (:8000)"]
     end
 
-    subgraph HostSystem[" 🐳 Docker Engine Host "]
-        DockerSock["🔌 Unix Domain Socket<br/><code>/var/run/docker.sock</code>"]:::daemonStyle
-        DockerEngine["⚙️ Docker Engine Daemon"]:::daemonStyle
-    end
-
-    subgraph Backends[" 📦 Docker Bridge Network (docker-lb-net) "]
-        AppA["🟢 Container A: app-a (:8000)<br/>FastAPI / Health / Delay"]:::appAStyle
-        AppB["🔵 Container B: app-b (:8000)<br/>FastAPI / Health / Delay"]:::appBStyle
-    end
-
-    %% INTERCONNECTIONS & TRAFFIC
-    TG -->|HTTP Request Stream| Proxy
-    UI -->|Split sliders & manual actions| API
-    MCPAgent -->|JSON-RPC via stdio| MCPServer
-    MCPServer -->|HTTP + X-Source: mcp| API
-
-    API --> LockOp
-    LockOp --> LockState
-    Proxy --> LockState
-    LockState --> State
-    State --> SWRR
-    Proxy --> SWRR
-
-    SWRR ==>|Weighted Traffic 70%| AppA
-    SWRR ==>|Weighted Traffic 30%| AppB
-
-    HM -.->|"HTTP GET /health (every 2s)"| AppA
-    HM -.->|"HTTP GET /health (every 2s)"| AppB
-    HM --> LockState
-    HM --> EL
-
-    API --> DockerSock
-    DockerSock --> DockerEngine
-    DockerEngine -.->|Lifecycle: start/stop| AppA
-    DockerEngine -.->|Lifecycle: start/stop| AppB
-
-    API -.->|Audit log action| EL
-    Proxy -.->|Metrics increment| EL
+    HTTP --> LB
+    UI <--> API
+    MCP <--> MCP_SERVER
+    API --> SM
+    MCP_SERVER --> API
+    SM --> LB
+    SM --> RM
+    RM --> DS
+    HC --> A
+    HC --> B
+    LB -->|Effective Split| A
+    LB -->|Effective Split| B
+    EL --> UI
 ```
 
 For complete architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
