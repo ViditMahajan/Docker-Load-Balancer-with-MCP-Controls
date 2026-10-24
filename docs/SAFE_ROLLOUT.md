@@ -64,45 +64,91 @@ The `/api/rollout/{target}` workflow transitions through an explicit state machi
 
 ---
 
+### 3.1 Rollout Lifecycle State Machine
+
+```mermaid
+flowchart LR
+    %% COLOR & STYLE DEFINITIONS
+    classDef startPhase fill:#1e3799,stroke:#54a0ff,stroke-width:2px,color:#ffffff;
+    classDef waitPhase fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#ffffff;
+    classDef switchPhase fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
+    classDef drainPhase fill:#d35400,stroke:#e67e22,stroke-width:2px,color:#ffffff;
+    classDef donePhase fill:#104e32,stroke:#2ed573,stroke-width:2px,color:#ffffff;
+    classDef rollPhase fill:#b71540,stroke:#eb2f06,stroke-width:2px,color:#ffffff;
+
+    P1["🚀 1. start_target<br/>(Docker API starts target)"]:::startPhase --> P2["⏳ 2. waiting_healthy<br/>(Polls /health up to 15s)"]:::waitPhase
+    
+    P2 -->|"✅ Target Healthy"| P3["🔀 3. switching_traffic<br/>(Traffic to target, old marked draining)"]:::switchPhase
+    P2 -->|"❌ Health Timeout"| RB["🚨 rolled_back<br/>(Abort & release lock)"]:::rollPhase
+
+    P3 --> P4["💧 4. draining_old<br/>(Wait for in_flight == 0)"]:::drainPhase
+
+    P4 -->|"✅ All In-Flight Done"| P5["🛑 5. stopping_old<br/>(Docker API stops old)"]:::startPhase
+    P4 -->|"💥 Target Crashes Mid-Drain"| RB
+
+    P5 --> P6["🎉 6. completed<br/>(Zero downtime achieved)"]:::donePhase
+```
+
+---
+
 ## 4. Safe Rollout Sequence (Mermaid)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Operator as Operator / MCP Agent
-    participant Ctrl as Controller Core
-    participant Docker as Docker Engine Socket
-    participant NewApp as Target Container (B)
-    participant OldApp as Old Container (A)
+    actor Operator as 👤 Operator / 🤖 MCP Agent
+    participant Ctrl as ⚖️ Controller Core
+    participant Docker as 🐳 Docker Engine Socket
+    participant NewApp as 🔵 Target Container (B)
+    participant OldApp as 🟢 Old Container (A)
 
     Operator->>Ctrl: POST /api/rollout/b
     activate Ctrl
-    Note over Ctrl: Acquire operation_lock (HTTP 409 if busy)
     
-    Ctrl->>Docker: docker.start(app-b)
-    Ctrl->>Ctrl: Set rollout.phase = "waiting_healthy"
-    
-    loop Health Probe (up to 15s timeout)
-        Ctrl->>NewApp: GET /health
-        NewApp-->>Ctrl: 200 OK (healthy)
+    rect rgb(240, 248, 255)
+        Note over Ctrl: Step 1: Concurrency Guard
+        Ctrl->>Ctrl: Acquire operation_lock (rejects concurrent ops with HTTP 409)
     end
 
-    Note over Ctrl: Phase: switching_traffic
-    Ctrl->>Ctrl: Set configured_split = {a: 0, b: 100}
-    Ctrl->>Ctrl: Set OldApp.routing = "draining"
-    
-    Note over Ctrl,OldApp: Phase: draining_old
-    loop Active Request Poll (every 100ms)
-        Ctrl->>Ctrl: Check OldApp.in_flight == 0
+    rect rgb(238, 242, 255)
+        Note over Ctrl,Docker: Step 2: Spin Up Target Container
+        Ctrl->>Docker: POST /containers/app-b/start
+        Ctrl->>Ctrl: Set rollout.phase = "waiting_healthy"
     end
     
-    Note over Ctrl: Phase: stopping_old
-    Ctrl->>Docker: docker.stop(app-a)
-    Ctrl->>Ctrl: Set OldApp.runtime = "stopped"
-    Ctrl->>Ctrl: Set rollout.phase = "completed"
-    Ctrl->>Ctrl: Release operation_lock
+    rect rgb(230, 249, 245)
+        Note over Ctrl,NewApp: Step 3: Health Verification Loop (up to 15s)
+        loop Health Probe (200ms intervals)
+            Ctrl->>NewApp: GET /health
+            NewApp-->>Ctrl: 200 OK {"status": "healthy"}
+        end
+    end
+
+    rect rgb(243, 232, 255)
+        Note over Ctrl: Step 4: Atomic Traffic Shift
+        Ctrl->>Ctrl: Phase: switching_traffic
+        Ctrl->>Ctrl: Set configured_split = {a: 0, b: 100}
+        Ctrl->>Ctrl: Set OldApp.routing = "draining" (New requests rejected)
+    end
     
-    Ctrl-->>Operator: HTTP 200 OK (Rollout completed)
+    rect rgb(255, 248, 230)
+        Note over Ctrl,OldApp: Step 5: Active Request Draining
+        Ctrl->>Ctrl: Phase: draining_old
+        loop Active In-Flight Poll (every 100ms)
+            Ctrl->>Ctrl: Check OldApp.in_flight == 0
+        end
+    end
+    
+    rect rgb(232, 245, 233)
+        Note over Ctrl,Docker: Step 6: Safe Teardown & Completion
+        Ctrl->>Ctrl: Phase: stopping_old
+        Ctrl->>Docker: POST /containers/app-a/stop
+        Ctrl->>Ctrl: Set OldApp.runtime = "stopped"
+        Ctrl->>Ctrl: Set rollout.phase = "completed"
+        Ctrl->>Ctrl: Release operation_lock
+    end
+    
+    Ctrl-->>Operator: 🚀 HTTP 200 OK {"status": "completed", "winner": "b"}
     deactivate Ctrl
 ```
 

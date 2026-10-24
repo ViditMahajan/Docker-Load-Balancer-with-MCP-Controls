@@ -106,37 +106,50 @@ A central innovation in DockRoute is the architectural separation of **Configure
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Client / Traffic Generator
-    participant Proxy as Controller Proxy (:8000)
-    participant State as State Store (state_lock)
-    participant SWRR as SWRR Selection Engine
-    participant BackendA as Container A (:8000)
-    participant BackendB as Container B (:8000)
+    actor Client as 🌐 Client / Traffic Generator
+    participant Proxy as 🔀 Controller Proxy (:8000)
+    participant State as 💾 State Store (state_lock)
+    participant SWRR as ⚙️ SWRR Selection Engine
+    participant BackendA as 🟢 Container A (:8000)
+    participant BackendB as 🔵 Container B (:8000)
 
     Client->>Proxy: HTTP Request (GET /proxy or GET /proxy/delay)
     activate Proxy
-    Proxy->>State: Acquire state_lock (microsecond read)
-    Proxy->>State: Check eligibility (runtime=running, health=healthy, routing=enabled)
+    
+    rect rgb(240, 248, 255)
+        Note over Proxy,State: Phase 1: Eligibility Check (Atomic state_lock)
+        Proxy->>State: Acquire state_lock (microsecond read)
+        Proxy->>State: Check eligibility (runtime=running, health=healthy, routing=enabled)
+    end
     
     alt Neither backend is eligible
-        Proxy->>State: Release state_lock
-        Proxy-->>Client: HTTP 503 Service Unavailable {"error": "No healthy backend"}
+        rect rgb(255, 235, 238)
+            Proxy->>State: Release state_lock
+            Proxy-->>Client: 🚫 HTTP 503 Service Unavailable {"error": "No healthy backend"}
+        end
     else At least one backend is eligible
-        Proxy->>SWRR: _select_container_unlocked()
-        SWRR-->>Proxy: Chosen backend (e.g., "a")
-        Proxy->>State: Increment in_flight count for "a"
-        Proxy->>State: Release state_lock
+        rect rgb(240, 248, 255)
+            Proxy->>SWRR: _select_container_unlocked()
+            SWRR-->>Proxy: Chosen backend (e.g., "a" via max current_weight)
+            Proxy->>State: Increment in_flight count for "a"
+            Proxy->>State: Release state_lock
+        end
         
-        Note over Proxy,BackendA: Forward request (state_lock NOT held during I/O!)
-        Proxy->>BackendA: Forwarded Request (GET / or /delay)
-        activate BackendA
-        BackendA-->>Proxy: HTTP Response (200 OK + payload + headers)
-        deactivate BackendA
+        rect rgb(245, 255, 250)
+            Note over Proxy,BackendA: Phase 2: Asynchronous HTTP Forwarding (state_lock RELEASED during I/O!)
+            Proxy->>BackendA: Forwarded Request (GET / or /delay)
+            activate BackendA
+            BackendA-->>Proxy: HTTP Response (200 OK + JSON payload + headers)
+            deactivate BackendA
+        end
         
-        Proxy->>State: Acquire state_lock
-        Proxy->>State: Decrement in_flight count for "a"
-        Proxy->>State: Increment metrics (total, success, by_container["a"])
-        Proxy->>State: Release state_lock
+        rect rgb(255, 250, 240)
+            Note over Proxy,State: Phase 3: Metrics Accounting (Atomic state_lock)
+            Proxy->>State: Acquire state_lock
+            Proxy->>State: Decrement in_flight count for "a"
+            Proxy->>State: Increment metrics (total, success, by_container["a"])
+            Proxy->>State: Release state_lock
+        end
         
         Proxy-->>Client: HTTP 200 OK (X-Handled-By: A)
     end

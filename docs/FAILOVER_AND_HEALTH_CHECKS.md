@@ -75,22 +75,29 @@ When an unhealthy or stopped container returns to full health:
 
 ```mermaid
 flowchart TD
-    Start([Incoming Request on /proxy]) --> Eval{Are any backends<br/>eligible?}
+    %% STYLES & COLOR PALETTE
+    classDef clientReq fill:#1e3799,stroke:#54a0ff,stroke-width:2px,color:#ffffff;
+    classDef decision fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#ffffff;
+    classDef failNode fill:#b71540,stroke:#eb2f06,stroke-width:2px,color:#ffffff;
+    classDef warnNode fill:#d35400,stroke:#e67e22,stroke-width:2px,color:#ffffff;
+    classDef okNode fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
+    classDef fwdNode fill:#0c2461,stroke:#4a69bd,stroke-width:2px,color:#ffffff;
 
-    Eval -->|No: Both unhealthy/stopped| Ret503[Return HTTP 503 Service Unavailable<br/>Error: No healthy backend]
+    Start(["🌐 Incoming Request on /proxy"]):::clientReq --> Eval{"⚖️ Are any backends eligible?<br/>(runtime == 'running' & health == 'healthy')"}:::decision
+
+    Eval -->|"❌ No (0 Backends)"| Ret503["🚫 Return HTTP 503 Service Unavailable<br/><code>{'error': 'No healthy backend'}</code>"]:::failNode
     
-    Eval -->|Yes: 1 backend eligible| Single[Failover Route to Single Survivor<br/>Receives 100% of new traffic]
+    Eval -->|"⚠️ Yes (1 Survivor)"| Single["⚡ Failover Route to Single Survivor<br/>Receives 100% of proxy traffic<br/>(Configured split preserved intact)"]:::warnNode
     
-    Eval -->|Yes: 2 backends eligible| SWRR[Run Smooth Weighted Round-Robin<br/>Routes according to configured weights]
+    Eval -->|"✅ Yes (Both Healthy)"| SWRR["⚙️ Run Smooth Weighted Round-Robin<br/>Routes according to configured weights (e.g. 70/30)"]:::okNode
 
-    Single --> Forward[Forward Request to Selected Backend]
-    SWRR --> Forward
+    Single ==> Forward["🚀 Forward Request to Selected Container"]:::fwdNode
+    SWRR ==> Forward
 
-    subgraph MonitorLoop["Background Health Monitor (every 2s)"]
-        Poll[Probe GET /health on backends]
-        Poll --> CheckResp{Status 200 OK?}
-        CheckResp -->|No: HTTP 503 or Timeout| MarkUnhealthy[Mark health = unhealthy<br/>Set effective_split to survivor 100%<br/>Preserve configured_split<br/>Log 'failover' event]
-        CheckResp -->|Yes: HTTP 200 OK| MarkHealthy[Mark health = healthy<br/>Re-enable routing<br/>Restore effective_split to configured ratio<br/>Log 'recovery' event]
+    subgraph MonitorLoop["💓 Background Health Monitor Loop (Every 2.0s, Timeout 1.5s)"]
+        Poll["🔍 Probe GET /health on app-a and app-b"]:::clientReq --> CheckResp{"HTTP Status Code?"}:::decision
+        CheckResp -->|"⚠️ Non-200 / Timeout"| MarkUnhealthy["🚨 Mark Container health = 'unhealthy'<br/>• Set effective_split to survivor 100%<br/>• Preserve configured_split untouched<br/>• Log 'failover' event to ring buffer"]:::failNode
+        CheckResp -->|"✅ HTTP 200 OK"| MarkHealthy["🎉 Mark Container health = 'healthy'<br/>• Re-enable routing<br/>• Restore effective_split to configured ratio<br/>• Log 'recovery' event to ring buffer"]:::okNode
     end
 ```
 

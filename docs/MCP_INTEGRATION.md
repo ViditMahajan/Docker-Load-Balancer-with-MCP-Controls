@@ -22,33 +22,43 @@ DockRoute implements the **Delegating Bridge Pattern**:
 ## 2. MCP Interaction Architecture (Mermaid)
 
 ```mermaid
-graph LR
-    subgraph HostSystem["AI Agent Host Environment"]
-        Agent["Claude Desktop / Cursor / Antigravity IDE<br/>(LLM Context)"]
-        Client["MCP Client Engine<br/>(JSON-RPC 2.0 protocol)"]
+flowchart LR
+    %% COLOR & STYLE DEFINITIONS
+    classDef agentStyle fill:#371b58,stroke:#8e24aa,stroke-width:2px,color:#ffffff;
+    classDef clientStyle fill:#4c3575,stroke:#a29bfe,stroke-width:2px,color:#ffffff;
+    classDef bridgeStyle fill:#1e3799,stroke:#4a69bd,stroke-width:2px,color:#ffffff;
+    classDef httpStyle fill:#0c2461,stroke:#54a0ff,stroke-width:2px,color:#ffffff;
+    classDef ctrlStyle fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
+    classDef auditStyle fill:#3d3d3d,stroke:#7f8c8d,stroke-width:2px,color:#ffffff;
+
+    subgraph HostSystem[" 🤖 AI Agent Host Environment "]
+        Agent["🧠 Claude Desktop / Cursor / Antigravity<br/>(LLM Context & Reasoning)"]:::agentStyle
+        Client["⚡ MCP Client Engine<br/>(Standard JSON-RPC 2.0 protocol)"]:::clientStyle
     end
 
-    subgraph MCPServerProcess["DockRoute MCP Server Process (mcp_server.py)"]
-        FastMCP["FastMCP Stdio Server<br/>(reads stdin, writes stdout)"]
-        HTTPClient["Async HTTP Client<br/>(httpx, timeout=130s)"]
+    subgraph MCPServerProcess[" 🔌 DockRoute MCP Process (mcp_server.py) "]
+        FastMCP["🚀 FastMCP Stdio Server<br/>(reads stdin, writes stdout)"]:::bridgeStyle
+        HTTPClient["🌐 Async HTTP Client<br/>(httpx, timeout=130s)"]:::httpStyle
     end
 
-    subgraph ControllerService["DockRoute Controller Service (:8000)"]
-        API["FastAPI Control Endpoints<br/>(Headers: X-Source: mcp)"]
-        Audit["Event Audit Ring Buffer<br/>(Deque maxlen=500)"]
-        State["Authoritative State Store"]
+    subgraph ControllerService[" ⚖️ DockRoute Controller Service (:8000) "]
+        API["📡 FastAPI Control Endpoints<br/><code>(Headers: X-Source: mcp)</code>"]:::ctrlStyle
+        Audit["📜 Event Audit Ring Buffer<br/>(Deque maxlen=500, Source tagged)"]:::auditStyle
+        State["💾 Controller State Store<br/>(Weights, Metrics, Containers)"]:::ctrlStyle
     end
 
-    Agent -->|Model decides to call tool| Client
-    Client -->|JSON-RPC via stdio| FastMCP
-    FastMCP -->|Dispatches tool handler| HTTPClient
-    HTTPClient -->|REST API Request| API
-    API -->|Logs action with source='mcp'| Audit
-    API -->|Mutates state safely| State
-    API -->>|JSON response payload| HTTPClient
-    HTTPClient -->>|Formatted JSON string| FastMCP
-    FastMCP -->>|JSON-RPC result| Client
-    Client -->>|Injected into LLM context| Agent
+    Agent -->|"1. Model decides tool call"| Client
+    Client -->|"2. JSON-RPC via stdio"| FastMCP
+    FastMCP -->|"3. Invokes tool handler"| HTTPClient
+    HTTPClient -->|"4. REST API Request"| API
+    
+    API -->|"5a. Log action with source='mcp'"| Audit
+    API -->|"5b. Mutate state under lock"| State
+    
+    API -->>|"6. JSON response payload"| HTTPClient
+    HTTPClient -->>|"7. Formatted JSON string"| FastMCP
+    FastMCP -->>|"8. JSON-RPC result"| Client
+    Client -->>|"9. Tool response injected"| Agent
 ```
 
 ---

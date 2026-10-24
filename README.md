@@ -48,40 +48,51 @@ DockRoute implements these enterprise traffic-shaping patterns from first princi
 ### High-Level System Architecture
 
 ```mermaid
-graph TD
-    subgraph Clients["Clients & Operator Layer"]
-        TG["CLI Traffic Generator<br/>(execution/traffic_generator.py)"]
-        UI["Web Dashboard<br/>(static/index.html)"]
-        MCPAgent["MCP Host / AI Agent<br/>(Claude Desktop / Cursor)"]
+flowchart TD
+    %% COLOR & STYLE DEFINITIONS
+    classDef clientStyle fill:#1e3799,stroke:#4a69bd,stroke-width:2px,color:#ffffff;
+    classDef mcpStyle fill:#4a148c,stroke:#8e24aa,stroke-width:2px,color:#ffffff;
+    classDef ctrlStyle fill:#0c2461,stroke:#1e90ff,stroke-width:2px,color:#ffffff;
+    classDef lockStyle fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#ffffff;
+    classDef appAStyle fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
+    classDef appBStyle fill:#104e32,stroke:#10ac84,stroke-width:2px,color:#ffffff;
+    classDef daemonStyle fill:#2c3e50,stroke:#7f8c8d,stroke-width:2px,color:#ffffff;
+    classDef logStyle fill:#3d3d3d,stroke:#a4b0be,stroke-width:2px,color:#ffffff;
+
+    subgraph Clients[" 🌐 Clients & Operators "]
+        TG["🚀 CLI Traffic Generator<br/><code>execution/traffic_generator.py</code>"]:::clientStyle
+        UI["🖥️ Web Dashboard<br/><code>static/index.html</code>"]:::clientStyle
+        MCPAgent["🤖 MCP Host / AI Agent<br/>(Claude / Cursor)"]:::mcpStyle
     end
 
-    subgraph MCPBridge["MCP Bridge"]
-        MCPServer["FastMCP Stdio Server<br/>(mcp_server.py)"]
+    subgraph MCPBridge[" ⚡ MCP stdio Bridge "]
+        MCPServer["🔌 FastMCP Stdio Server<br/><code>mcp_server.py</code>"]:::mcpStyle
     end
 
-    subgraph ControllerCore["DockRoute Controller Service (:8000)"]
-        API["FastAPI Control Plane<br/>(/api/split, /api/rollout, /api/containers)"]
-        Proxy["Reverse Proxy Core<br/>(/proxy, /proxy/delay)"]
-        SWRR["Smooth Weighted Round-Robin Engine"]
-        HM["Background Health Monitor Loop<br/>(refresh_all every 2s)"]
-        EL["Event Audit Logger<br/>(In-memory deque, maxlen=500)"]
-        State["Controller State Store<br/>(Containers, Splits, Metrics)"]
-        LockOp["Operation Lock<br/>(Serialized actions, HTTP 409 rejection)"]
-        LockState["State Lock<br/>(Microsecond atomic read/write)"]
+    subgraph ControllerCore[" ⚖️ DockRoute Controller Service (:8000) "]
+        API["📡 FastAPI Control Plane<br/><code>/api/split, /api/rollout</code>"]:::ctrlStyle
+        Proxy["🔀 Reverse Proxy Core<br/><code>/proxy, /proxy/delay</code>"]:::ctrlStyle
+        SWRR["⚙️ Smooth Weighted Round-Robin Engine<br/><code>_select_container_unlocked()</code>"]:::ctrlStyle
+        HM["💓 Background Health Loop<br/>(Polls backends every 2.0s)"]:::ctrlStyle
+        EL["📜 Event Audit Ring Buffer<br/>(In-memory deque, maxlen=500)"]:::logStyle
+        State["💾 Controller State Store<br/>(Weights, Counters, Metrics)"]:::ctrlStyle
+        LockOp["🔒 Operation Lock<br/>(Serialized actions, rejects 409)"]:::lockStyle
+        LockState["⚡ State Lock<br/>(Microsecond atomic read/write)"]:::lockStyle
     end
 
-    subgraph HostSystem["Host Operating System"]
-        DockerSock["Docker Unix Socket<br/>(/var/run/docker.sock)"]
-        DockerEngine["Docker Engine Daemon"]
+    subgraph HostSystem[" 🐳 Docker Engine Host "]
+        DockerSock["🔌 Unix Domain Socket<br/><code>/var/run/docker.sock</code>"]:::daemonStyle
+        DockerEngine["⚙️ Docker Engine Daemon"]:::daemonStyle
     end
 
-    subgraph Backends["Docker Bridge Network (docker-lb-net)"]
-        AppA["Container A: app-a (:8000)<br/>FastAPI / Health / Delay"]
-        AppB["Container B: app-b (:8000)<br/>FastAPI / Health / Delay"]
+    subgraph Backends[" 📦 Docker Bridge Network (docker-lb-net) "]
+        AppA["🟢 Container A: app-a (:8000)<br/>FastAPI / Health / Delay"]:::appAStyle
+        AppB["🔵 Container B: app-b (:8000)<br/>FastAPI / Health / Delay"]:::appBStyle
     end
 
-    TG -->|HTTP requests| Proxy
-    UI -->|Control actions & live telemetry| API
+    %% INTERCONNECTIONS & TRAFFIC
+    TG -->|HTTP Request Stream| Proxy
+    UI -->|Split sliders & manual actions| API
     MCPAgent -->|JSON-RPC via stdio| MCPServer
     MCPServer -->|HTTP + X-Source: mcp| API
 
@@ -92,21 +103,21 @@ graph TD
     State --> SWRR
     Proxy --> SWRR
 
-    SWRR -->|Forward request| AppA
-    SWRR -->|Forward request| AppB
+    SWRR ==>|Weighted Traffic 70%| AppA
+    SWRR ==>|Weighted Traffic 30%| AppB
 
-    HM -->|HTTP GET /health| AppA
-    HM -->|HTTP GET /health| AppB
+    HM -.->|HTTP GET /health (every 2s)| AppA
+    HM -.->|HTTP GET /health (every 2s)| AppB
     HM --> LockState
     HM --> EL
 
     API --> DockerSock
     DockerSock --> DockerEngine
-    DockerEngine -->|Lifecycle: start/stop| AppA
-    DockerEngine -->|Lifecycle: start/stop| AppB
+    DockerEngine -.->|Lifecycle: start/stop| AppA
+    DockerEngine -.->|Lifecycle: start/stop| AppB
 
-    API --> EL
-    Proxy --> EL
+    API -.->|Audit log action| EL
+    Proxy -.->|Metrics increment| EL
 ```
 
 For complete architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -127,29 +138,39 @@ For complete architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Client / Traffic Generator
-    participant Proxy as Controller Proxy (:8000)
-    participant State as State Store (state_lock)
-    participant SWRR as SWRR Engine
-    participant App as Selected Backend (A or B)
+    actor Client as 🌐 Client / Traffic Generator
+    participant Proxy as 🔀 Controller Proxy (:8000)
+    participant State as 💾 State Store (state_lock)
+    participant SWRR as ⚙️ SWRR Engine
+    participant App as 🟢 Container A (or 🔵 B)
 
     Client->>Proxy: GET /proxy/delay?seconds=2
     activate Proxy
-    Proxy->>State: Acquire state_lock (check eligibility)
-    Proxy->>SWRR: _select_container_unlocked()
-    SWRR-->>Proxy: Selected "a"
-    Proxy->>State: Increment in_flight for "a"
-    Proxy->>State: Release state_lock
     
-    Proxy->>App: Forward HTTP Request
-    activate App
-    App-->>Proxy: HTTP 200 OK {"container": "A"}
-    deactivate App
-    
-    Proxy->>State: Acquire state_lock
-    Proxy->>State: Decrement in_flight for "a", increment metrics
-    Proxy->>State: Release state_lock
-    
+    rect rgb(240, 248, 255)
+        Note over Proxy,State: Phase 1: Microsecond Atomic Backend Selection
+        Proxy->>State: Acquire state_lock (check eligibility: running & healthy)
+        Proxy->>SWRR: _select_container_unlocked()
+        SWRR-->>Proxy: Selected "a" (highest current weight)
+        Proxy->>State: Increment in_flight counter ("a" = 1)
+        Proxy->>State: Release state_lock
+    end
+
+    rect rgb(245, 255, 250)
+        Note over Proxy,App: Phase 2: Asynchronous HTTP Forwarding (Lock FREE!)
+        Proxy->>App: Forward HTTP Request (GET /delay?seconds=2)
+        activate App
+        App-->>Proxy: HTTP 200 OK {"container": "A", "status": "delayed"}
+        deactivate App
+    end
+
+    rect rgb(255, 250, 240)
+        Note over Proxy,State: Phase 3: Microsecond Metrics & Counter Update
+        Proxy->>State: Acquire state_lock
+        Proxy->>State: Decrement in_flight ("a" = 0), increment metrics
+        Proxy->>State: Release state_lock
+    end
+
     Proxy-->>Client: HTTP 200 OK (X-Handled-By: A)
     deactivate Proxy
 ```
@@ -198,17 +219,27 @@ For complete mathematical proofs and divergence handling, see [docs/LOAD_BALANCI
 
 ```mermaid
 flowchart TD
-    Req([Incoming Request]) --> Check{Eligible Backends?}
-    Check -->|None| Err[HTTP 503 Service Unavailable]
-    Check -->|1 Backend| Survivor[100% Traffic to Survivor]
-    Check -->|2 Backends| SWRR[SWRR Configured Ratio]
-    Survivor --> Forward[Forward Request]
-    SWRR --> Forward
+    %% STYLES & COLOR PALETTE
+    classDef clientReq fill:#1e3799,stroke:#54a0ff,stroke-width:2px,color:#ffffff;
+    classDef decision fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#ffffff;
+    classDef failNode fill:#b71540,stroke:#eb2f06,stroke-width:2px,color:#ffffff;
+    classDef warnNode fill:#d35400,stroke:#e67e22,stroke-width:2px,color:#ffffff;
+    classDef okNode fill:#006266,stroke:#1dd1a1,stroke-width:2px,color:#ffffff;
+    classDef fwdNode fill:#0c2461,stroke:#4a69bd,stroke-width:2px,color:#ffffff;
 
-    subgraph Monitor["Health Monitor Loop (2s)"]
-        Probe[GET /health] --> Resp{200 OK?}
-        Resp -->|No| Failover[Effective = 100% Survivor<br/>Preserve Configured Split]
-        Resp -->|Yes| Recovery[Restore Configured Split<br/>Log Transition Event]
+    Req(["🌐 Incoming Request on /proxy"]):::clientReq --> Check{"⚖️ Inspect Eligible Backends<br/>(runtime == 'running' & health == 'healthy')"}:::decision
+    
+    Check -->|"❌ 0 Eligible"| Err["🚫 HTTP 503 Service Unavailable<br/><code>{'error': 'No healthy backend'}</code>"]:::failNode
+    Check -->|"⚠️ 1 Eligible (Survivor)"| Survivor["⚡ Dynamic Failover Mode<br/>Survivor receives 100% of proxy traffic<br/>(Configured split preserved!)"]:::warnNode
+    Check -->|"✅ 2 Eligible (Normal)"| SWRR["⚙️ SWRR Balanced Mode<br/>Distributed by configured weights (e.g. 70/30)"]:::okNode
+    
+    Survivor ==> Forward["🚀 Forward Request to Healthy Container"]:::fwdNode
+    SWRR ==> Forward
+
+    subgraph Monitor["💓 Background Health Loop (Every 2.0s, Timeout 1.5s)"]
+        Probe["🔍 HTTP GET /health"]:::clientReq --> Resp{"HTTP Status Code?"}:::decision
+        Resp -->|"⚠️ Non-200 / Timeout"| Failover["🚨 Trigger Instant Failover<br/>• Mark health = 'unhealthy'<br/>• Set effective_split = 100% survivor<br/>• Log transition event"]:::failNode
+        Resp -->|"✅ HTTP 200 OK"| Recovery["🎉 Automatic Self-Healing Recovery<br/>• Mark health = 'healthy'<br/>• Restore configured_split ratio<br/>• Log recovery event"]:::okNode
     end
 ```
 
