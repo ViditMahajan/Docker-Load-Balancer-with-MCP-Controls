@@ -1,53 +1,10 @@
-# DockRoute: System Architecture & Design
+# DockRoute: System Architecture
 
-This document details the internal architecture, locking models, concurrency boundaries, and design considerations of **DockRoute** — a high-reliability, health-aware Docker load balancer with Model Context Protocol (MCP) controls.
-
----
-
-## 1. Architectural Philosophy & Layering
-
-DockRoute separates probabilistic, operator-facing intelligence (such as AI agents and human operators) from deterministic container orchestration and proxy routing.
-
-```
-+-------------------------------------------------------------------------------+
-|                            OPERATOR INTERFACES                                |
-|  Web Dashboard (HTML5/ES6)      MCP Client (Claude / AI)     CLI Traffic Gen  |
-+-------------------------------------------------------------------------------+
-                                        | HTTP (REST) / stdio
-                                        v
-+-------------------------------------------------------------------------------+
-|                     DOCKROUTE CONTROLLER & PROXY ENGINE                       |
-|                                                                               |
-|  +------------------------+  +---------------------+  +--------------------+  |
-|  |     Proxy Router       |  |   Control API       |  |  MCP Server Bridge |  |
-|  |  /proxy, /proxy/delay  |  | /api/split, /rollout|  |  mcp_server.py     |  |
-|  +------------------------+  +---------------------+  +--------------------+  |
-|               |                         |                        |            |
-|               v                         v                        v            |
-|  +-------------------------------------------------------------------------+  |
-|  |                        TWO-TIER LOCKING MODEL                           |  |
-|  |  * state_lock: Protects atomic updates (weights, metrics, health status)|  |
-|  |  * operation_lock: Serializes long operator workflows (rollout, drains) |  |
-|  +-------------------------------------------------------------------------+  |
-|               |                         |                                     |
-|               v                         v                                     |
-|  +------------------------+  +---------------------+                          |
-|  | SWRR Selection Engine  |  | Event Audit Ring Log|                          |
-|  | (Smooth Weighted RR)   |  | (500 capacity deque)|                          |
-|  +------------------------+  +---------------------+                          |
-+-------------------------------------------------------------------------------+
-             |                                        |
-             | Docker Engine API                      | HTTP Forwarding
-             v                                        v
-+--------------------------+              +-------------------------------------+
-|      DOCKER DAEMON       |              |        BACKEND CONTAINERS           |
-|   /var/run/docker.sock   |              |  App A (:8000)      App B (:8000)   |
-+--------------------------+              +-------------------------------------+
-```
+DockRoute is a health-aware, zero-downtime HTTP load balancer designed for containerized microservices, featuring dual control planes: a real-time web dashboard and a Model Context Protocol (MCP) server for AI agents.
 
 ---
 
-## 2. High-Level Component Architecture (Mermaid)
+## 1. High-Level Component Architecture
 
 ```mermaid
 flowchart TD
@@ -90,75 +47,15 @@ flowchart TD
 
 ---
 
-## 3. Concurrency & Locking Mechanics
+## 2. Core Subsystems
 
-A recurring flaw in naive load-balancer implementations is holding state locks during network I/O or sleep intervals. DockRoute enforces strict isolation:
-
-### Two-Tier Concurrency Architecture
-
-1. **`state_lock` (`asyncio.Lock`)**:
-   - **Scope**: Memory-only mutations (updating container health dictionaries, calculating SWRR weights, incrementing metrics counters, appending log entries).
-   - **Duration**: Sub-millisecond execution.
-   - **Critical Rule**: Network requests (forwarding traffic to containers, waiting for Docker daemon calls, polling health checks, or waiting for in-flight requests to drain) **NEVER** hold `state_lock`.
-
-2. **`operation_lock` (`asyncio.Lock`)**:
-   - **Scope**: Coarse-grained operator workflows (starting a container, stopping a container, executing a safe rollout, modifying splits).
-   - **Non-blocking Rejection**: If an operation is already in progress, competing control requests receive an immediate **HTTP 409 Conflict** response. This prevents race conditions, conflicting target selections, or interleaved rollout steps.
-   - **Audit Trail**: Every rejection is logged in the event ring buffer with source attribution (`dashboard`, `mcp`, `api`).
-
----
-
-## 4. State Representation Model
-
-The controller maintains a single authoritative state model:
-
-```python
-{
-    "containers": {
-        "a": {
-            "name": "A",
-            "container_name": "app-a",
-            "runtime": "running",         # "running" | "stopped" | "stopping" | "unknown"
-            "health": "healthy",          # "healthy" | "unhealthy" | "unknown"
-            "routing": "enabled",         # "enabled" | "draining" | "disabled"
-            "in_flight": 0,               # Active concurrent requests
-            "last_health_check": "ISO",   # Timestamp
-            "last_error": None,           # Last inspection or probe error
-            "status": "healthy"           # Derived UI aggregate status
-        },
-        "b": { ... }
-    },
-    "configured_split": {"a": 70, "b": 30},
-    "effective_split": {"a": 70, "b": 30},
-    "metrics": {
-        "total": 1420,
-        "success": 1420,
-        "failure": 0,
-        "by_container": {"a": 994, "b": 426}
-    },
-    "rollout": None,                      # Active rollout telemetry if in progress
-    "operation_busy": False               # Status of operation_lock
-}
-```
-
----
-
-## 5. Event Audit Ring Buffer
-
-DockRoute records an append-only in-memory log via Python's `collections.deque(maxlen=500)`:
-
-- **Attributes**: `timestamp`, `action`, `source` (`dashboard`, `mcp`, `api`, `system`, `health-monitor`), `result` (`success`, `rejected`, `error`, `cancelled`, `failover`, `recovery`), and `details`.
-- **Thread Safety**: Appending to a `deque` in Python is atomic; no await point can yield execution midway during log insertion.
-- **Exposure**: Queryable via `GET /api/logs?limit=N` and MCP `get_recent_logs()`.
-
----
-
-## 6. Failure Modes & Edge Case Safeguards
-
-| Failure Mode | Naive Result | DockRoute Solution |
-| :--- | :--- | :--- |
-| **Both containers crash** | Proxy hangs or throws uncaught 500 | Detection in SWRR engine returns explicit **HTTP 503 Service Unavailable** with diagnostic payload. |
-| **Stop last healthy container** | Cluster total outage | Validated in `stop_container()`. Rejects with **HTTP 409** and leaves container running. |
-| **Rollout target fails health check** | Partial rollout / broken routing | Target timeout aborts rollout, logs `rollout_rollback`, keeps old container enabled, returns **HTTP 504**. |
-| **Replacement container dies while old is draining** | Requests dropped / both down | Background monitor instantly restores old container to `enabled` and aborts stop workflow. |
-| **Docker socket disconnect** | Controller crashes on inspect | Caught gracefully; marks container `unknown` with logged error while proxy attempts remaining healthy backends. |
+1. **FastAPI Control Plane**: Exposes administrative endpoints for configuring splits, triggering rollouts, checking cluster status, and reviewing audit logs.
+2. **Reverse Proxy Core**: Intercepts client traffic on `/proxy` and forwards requests to eligible backends using Smooth Weighted Round-Robin (SWRR).
+3. **State & Concurrency Management**:
+   - `state_lock`: Protects in-memory counters, health statuses, and metrics. Released immediately before network forwarding to ensure zero latency impact on proxying.
+   - `operation_lock`: Serializes long-running workflows (rollouts, container stops) and rejects conflicting concurrent requests with `HTTP 409 Conflict`.
+4. **Health Monitor Loop**: Asynchronously probes backend `/health` endpoints every 2 seconds. Automatically shifts 100% of traffic to healthy survivors if a backend fails, and restores configured ratios upon recovery.
+5. **Connection Draining & Safe Rollout**:
+   - Tracks active in-flight requests per container.
+   - Marks target containers `draining` during rollouts or shutdowns, allowing in-flight requests to complete while routing new traffic away.
+6. **FastMCP Server**: Provides standard Model Context Protocol tools over stdio, logging all agent-executed mutations with `source: mcp`.
