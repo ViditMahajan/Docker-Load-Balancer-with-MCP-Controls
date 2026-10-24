@@ -1,0 +1,56 @@
+services:
+  app-a:
+    build: ./app
+    container_name: app-a
+    environment:
+      CONTAINER_LABEL: A
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 2
+      start_period: 3s
+    restart: "no"
+    networks: [lb-net]
+
+  app-b:
+    build: ./app
+    container_name: app-b
+    environment:
+      CONTAINER_LABEL: B
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 2
+      start_period: 3s
+    restart: "no"
+    networks: [lb-net]
+
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    container_name: lb-controller
+    environment:
+      APP_A_CONTAINER: app-a
+      APP_B_CONTAINER: app-b
+      APP_A_URL: http://app-a:8000
+      APP_B_URL: http://app-b:8000
+      HEALTH_INTERVAL_SECONDS: ${HEALTH_INTERVAL_SECONDS:-2}
+      DRAIN_TIMEOUT_SECONDS: ${DRAIN_TIMEOUT_SECONDS:-10}
+      HEALTH_TIMEOUT_SECONDS: ${HEALTH_TIMEOUT_SECONDS:-15}
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - app-a
+      - app-b
+    restart: unless-stopped
+    networks: [lb-net]
+
+networks:
+  lb-net:
+    name: docker-lb-net
+    driver: bridge
