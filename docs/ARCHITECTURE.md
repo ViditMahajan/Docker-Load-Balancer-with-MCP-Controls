@@ -108,8 +108,8 @@ flowchart TD
     SWRR ==>|Weighted Traffic 70%| AppA
     SWRR ==>|Weighted Traffic 30%| AppB
 
-    HM -.->|HTTP GET /health (every 2s)| AppA
-    HM -.->|HTTP GET /health (every 2s)| AppB
+    HM -.->|"HTTP GET /health (every 2s)"| AppA
+    HM -.->|"HTTP GET /health (every 2s)"| AppB
     HM --> LockState
     HM --> EL
 
