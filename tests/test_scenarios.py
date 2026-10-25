@@ -310,6 +310,11 @@ async def test_dashboard_metrics_and_events(test_controller):
         logs = resp.json()
         assert isinstance(logs, list)
 
+        # Verify logs are persisted and queryable from SQLite database
+        test_controller.log("test_event", "test_source", "success", "Database persistence test details")
+        db_logs = await test_controller.recent_logs(5)
+        assert any(l["action"] == "test_event" and l["details"] == "Database persistence test details" for l in db_logs)
+
 
 # ---------------------------------------------------------------------------
 # Test 11: Regression: Traffic split editing, companion calculation, and preservation

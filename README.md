@@ -10,7 +10,7 @@ DockRoute is a zero-downtime HTTP load balancer routing traffic between containe
 - **Dynamic Failover & Self-Healing**: Automatically routes 100% of traffic to a healthy survivor if one container fails, and restores configured splits upon recovery.
 - **Zero-Downtime Safe Rollout**: 5-phase blue/green deployment with health verification, traffic switching, active request draining, and automatic rollback on failure.
 - **Dual Control Planes**: Full operational control via an interactive Web Dashboard or AI assistants via the Model Context Protocol (MCP).
-- **Audit Logging**: In-memory ring buffer recording all state changes and operator actions tagged by client origin.
+- **Audit Logging**: Persistent SQLite database recording all state changes and operator actions tagged by client origin (`dashboard`, `mcp`, `traffic-generator`, `api`).
 
 ---
 
@@ -54,6 +54,7 @@ For full architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 - **Language & Runtime**: Python 3.12+
 - **Control Plane & Proxy**: FastAPI, Starlette, Uvicorn, HTTPX
+- **Database & Persistence**: SQLite3 (persistent volume-backed audit log)
 - **AI Agent Protocol**: Model Context Protocol (MCP), FastMCP
 - **Container Infrastructure**: Docker, Docker Compose, Docker SDK for Python
 - **Frontend**: Vanilla HTML5, CSS3, JavaScript (Fetch API & Server-Sent Events)

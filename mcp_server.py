@@ -9,9 +9,9 @@ import os
 from typing import Any
 import httpx
 try:
-    from mcp.server.fastmcp import FastMCP as MCPServer
+    from mcp.server import MCPServer  # type: ignore[attr-defined]
 except (ImportError, ModuleNotFoundError):
-    from mcp.server import MCPServer
+    from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[no-redef]
 
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://localhost:8000").rstrip("/")
 mcp = MCPServer("DockRoute Load Balancer")
@@ -42,12 +42,12 @@ async def status() -> str:
 
 @mcp.tool()
 async def set_traffic_split(a_percent: int, b_percent: int) -> str:
-    """Set desired traffic weights for A and B. Percentages must be 0–100, sum to 100, and any nonzero target must be healthy, running, and enabled."""
+    """Set desired traffic weights for A and B. Percentages must be 0-100, sum to 100, and any nonzero target must be healthy, running, and enabled."""
     return await request("POST", "/api/split", {"a": a_percent, "b": b_percent})
 
 @mcp.tool()
 async def traffic_split(a_percent: int, b_percent: int) -> str:
-    """Set desired traffic weights for A and B. Percentages must be 0–100, sum to 100, and any nonzero target must be healthy, running, and enabled."""
+    """Set desired traffic weights for A and B. Percentages must be 0-100, sum to 100, and any nonzero target must be healthy, running, and enabled."""
     return await set_traffic_split(a_percent, b_percent)
 
 @mcp.tool()

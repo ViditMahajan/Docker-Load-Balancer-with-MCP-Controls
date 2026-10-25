@@ -40,15 +40,20 @@ services:
       HEALTH_INTERVAL_SECONDS: ${HEALTH_INTERVAL_SECONDS:-2}
       DRAIN_TIMEOUT_SECONDS: ${DRAIN_TIMEOUT_SECONDS:-10}
       HEALTH_TIMEOUT_SECONDS: ${HEALTH_TIMEOUT_SECONDS:-15}
+      DB_PATH: /data/dockroute_logs.db
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - lb-data:/data
     depends_on:
       - app-a
       - app-b
     restart: unless-stopped
     networks: [lb-net]
+
+volumes:
+  lb-data:
 
 networks:
   lb-net:

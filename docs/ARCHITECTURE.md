@@ -58,4 +58,6 @@ flowchart TD
 5. **Connection Draining & Safe Rollout**:
    - Tracks active in-flight requests per container.
    - Marks target containers `draining` during rollouts or shutdowns, allowing in-flight requests to complete while routing new traffic away.
-6. **FastMCP Server**: Provides standard Model Context Protocol tools over stdio, logging all agent-executed mutations with `source: mcp`.
+6. **FastMCP Server & SQLite Audit Logging**:
+   - Provides standard Model Context Protocol tools over stdio, logging all agent-executed mutations with `source: mcp`.
+   - Persists all cluster actions, failovers, and recoveries into a durable SQLite database (`dockroute_logs.db`) mounted on a persistent Docker volume, with an in-memory fallback cache.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import sqlite3
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ APP_URLS = {"a": os.getenv("APP_A_URL", "http://app-a:8000"), "b": os.getenv("AP
 HEALTH_INTERVAL = float(os.getenv("HEALTH_INTERVAL_SECONDS", "2"))
 DEFAULT_DRAIN_TIMEOUT = float(os.getenv("DRAIN_TIMEOUT_SECONDS", "10"))
 DEFAULT_HEALTH_TIMEOUT = float(os.getenv("HEALTH_TIMEOUT_SECONDS", "15"))
+DB_PATH = os.getenv("DB_PATH", "dockroute_logs.db")
 
 
 def now_iso() -> str:
@@ -68,7 +70,7 @@ class UnhealthyBody(BaseModel):
 
 
 class Controller:
-    def __init__(self) -> None:
+    def __init__(self, db_path: str = DB_PATH) -> None:
         self.state_lock = asyncio.Lock()
         self.operation_lock = asyncio.Lock()
         self.docker_client: docker.DockerClient | None = None
@@ -89,6 +91,38 @@ class Controller:
         self.monitor_task: asyncio.Task[None] | None = None
         self.http: httpx.AsyncClient | None = None  # short-timeout health/admin client
         self.proxy_http: httpx.AsyncClient | None = None  # no short timeout: /delay must be able to finish
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        details TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON audit_logs(id DESC)")
+                # Warm in-memory deque with most recent events from database if starting up
+                cursor = conn.execute("SELECT timestamp, action, source, result, details FROM audit_logs ORDER BY id DESC LIMIT 500")
+                rows = cursor.fetchall()
+                for row in reversed(rows):
+                    self.events.appendleft({
+                        "timestamp": row[0],
+                        "action": row[1],
+                        "source": row[2],
+                        "result": row[3],
+                        "details": row[4],
+                    })
+        except Exception as exc:
+            print(f"Warning: Failed to initialize SQLite audit_logs table at {self.db_path}: {exc}")
 
     def docker(self) -> docker.DockerClient:
         if self.docker_client is None:
@@ -96,8 +130,18 @@ class Controller:
         return self.docker_client
 
     def log(self, action: str, source: str, result: str, details: str = "") -> None:
-        # append is synchronous: no await point can interleave while a record is added.
-        self.events.appendleft({"timestamp": now_iso(), "action": action, "source": source, "result": result, "details": details})
+        timestamp = now_iso()
+        # In-memory buffer update
+        self.events.appendleft({"timestamp": timestamp, "action": action, "source": source, "result": result, "details": details})
+        # Persist to SQLite database
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO audit_logs (timestamp, action, source, result, details) VALUES (?, ?, ?, ?, ?)",
+                    (timestamp, action, source, result, details),
+                )
+        except Exception as exc:
+            print(f"Warning: Failed to persist log entry to SQLite: {exc}")
 
     def effective_split_unlocked(self) -> dict[str, int]:
         eligible = [n for n in APP_NAMES if self._eligible_unlocked(n)]
@@ -560,7 +604,28 @@ class Controller:
         return await self.status()
 
     async def recent_logs(self, limit: int = 50) -> list[dict[str, Any]]:
-        return list(self.events)[:max(1, min(limit, 200))]
+        safe_limit = max(1, min(limit, 200))
+        try:
+            def query_db() -> list[dict[str, Any]]:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.execute(
+                        "SELECT timestamp, action, source, result, details FROM audit_logs ORDER BY id DESC LIMIT ?",
+                        (safe_limit,),
+                    )
+                    return [
+                        {
+                            "timestamp": row[0],
+                            "action": row[1],
+                            "source": row[2],
+                            "result": row[3],
+                            "details": row[4],
+                        }
+                        for row in cursor.fetchall()
+                    ]
+            return await asyncio.to_thread(query_db)
+        except Exception as exc:
+            # Fallback to in-memory deque if DB query encounters an unexpected issue
+            return list(self.events)[:safe_limit]
 
 
 controller = Controller()
