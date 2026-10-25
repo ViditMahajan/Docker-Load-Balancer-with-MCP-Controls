@@ -116,5 +116,4 @@ python -m pytest tests/ -v
 
 ## 7. Demo Video
 
-- **Demo Video**: [Watch the Walkthrough]([https://youtu.be/speka7QaMNY])
-
+- **Demo Video**: [Docker Load Balancer with MCP Controls Demo](https://youtu.be/speka7QaMNY)
