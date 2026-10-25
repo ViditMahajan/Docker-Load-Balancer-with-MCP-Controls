@@ -116,5 +116,5 @@ python -m pytest tests/ -v
 
 ## 7. Demo Video
 
-- **Demo Video**: [Watch the Walkthrough](https://youtu.be/X_wKMBQ26FU)
+- **Demo Video**: [Watch the Walkthrough]((https://youtu.be/speka7QaMNY))
 
